@@ -3,6 +3,7 @@ import pandas as pd
 from datetime import datetime
 import json
 import os
+import requests
 
 # Configuración de la página
 st.set_page_config(
@@ -13,20 +14,6 @@ st.set_page_config(
 
 CONFIG_FILE = "config_dt1.json"
 DATA_FILE = "historial_dt1.csv"
-
-# --- BASE DE DATOS DE ALIMENTOS (Base local expandible / Se puede conectar a BBDD externa) ---
-ALIMENTOS_DEFAULT = [
-    {"alimento": "Pan de molde", "porcion": "1 rebanada (25g)", "carbos_por_porcion": 12},
-    {"alimento": "Pan hallulla / marraqueta", "porcion": "1/2 unidad (50g)", "carbos_por_porcion": 25},
-    {"alimento": "Arroz cocido", "porcion": "1 taza (150g)", "carbos_por_porcion": 40},
-    {"alimento": "Fideos cocidos", "porcion": "1 taza (150g)", "carbos_por_porcion": 42},
-    {"alimento": "Papas cocidas", "porcion": "1 unidad mediana (150g)", "carbos_por_porcion": 26},
-    {"alimento": "Manzana", "porcion": "1 unidad mediana (150g)", "carbos_por_porcion": 18},
-    {"alimento": "Plátano", "porcion": "1 unidad mediana (120g)", "carbos_por_porcion": 23},
-    {"alimento": "Leche entera / descremada", "porcion": "1 vaso (200ml)", "carbos_por_porcion": 10},
-    {"alimento": "Avena", "porcion": "1/2 taza (40g)", "carbos_por_porcion": 24},
-    {"alimento": "Yogurt natural", "porcion": "1 pote (125g)", "carbos_por_porcion": 6}
-]
 
 # Configuración por defecto con escalas/rangos fijos de glicemia
 DEFAULT_CONFIG = {
@@ -75,6 +62,30 @@ def guardar_config(config_data):
     with open(CONFIG_FILE, "w") as f:
         json.dump(config_data, f, indent=4)
 
+# Función para consultar Open Food Facts API
+def buscar_open_food_facts(query):
+    url = f"https://world.openfoodfacts.org/cgi/search.pl?search_terms={query}&search_simple=1&action=process&json=1&page_size=10"
+    headers = {"User-Agent": "MiControlDT1App/1.0"}
+    try:
+        response = requests.get(url, headers=headers, timeout=5)
+        if response.status_code == 200:
+            datos = response.json()
+            productos = []
+            for p in datos.get("products", []):
+                nombre = p.get("product_name", "Producto sin nombre")
+                marca = p.get("brands", "")
+                carbos_100g = p.get("nutriments", {}).get("carbohydrates_100g", 0.0)
+                
+                nombre_completo = f"{nombre} ({marca})" if marca else nombre
+                productos.append({
+                    "nombre": nombre_completo,
+                    "carbos_100g": float(carbos_100g) if carbos_100g is not None else 0.0
+                })
+            return productos
+    except Exception as e:
+        st.error(f"Error al conectar con la base de datos: {e}")
+    return []
+
 if "config" not in st.session_state:
     st.session_state.config = cargar_config()
 
@@ -83,7 +94,7 @@ if "plato" not in st.session_state:
 
 st.title("💉 Mi Control DT1")
 
-pestana1, pestana2, pestana3, pestana4 = st.tabs(["🧮 Calculadora", "🥗 Alimentos", "📜 Historial", "⚙️ Configuración"])
+pestana1, pestana2, pestana3, pestana4 = st.tabs(["🧮 Calculadora", "🥗 Alimentos (API)", "📜 Historial", "⚙️ Configuración"])
 
 # --- PESTAÑA 1: CALCULADORA ---
 with pestana1:
@@ -102,7 +113,6 @@ with pestana1:
 
     st.caption(f"Ratio activo: **1U por cada {comida_actual['ratio']}g CH**")
 
-    # Suma automática de carbohidratos calculados en la pestaña "Alimentos"
     carbos_desde_plato = sum([item["total_carbos"] for item in st.session_state.plato])
 
     col1, col2 = st.columns(2)
@@ -112,12 +122,11 @@ with pestana1:
         carbos = st.number_input("Carbohidratos totales (g)", min_value=0, max_value=300, value=int(carbos_desde_plato), step=1)
 
     if st.session_state.plato:
-        st.info(f"🛒 Carbohidratos cargados desde la pestaña de Alimentos: **{carbos_desde_plato}g**")
+        st.info(f"🛒 Carbohidratos del plato activo: **{carbos_desde_plato}g**")
 
     paso_dosis = st.radio("Redondeo del lápiz (pasos de):", [0.5, 1.0], horizontal=True)
 
     if st.button("Calcular Dosis Total", type="primary", use_container_width=True):
-        # 1. Corrección según la Escala de Rangos de Glicemia
         dosis_correccion = 0.0
         rango_encontrado = None
         for e in comida_actual["escalas"]:
@@ -126,10 +135,7 @@ with pestana1:
                 rango_encontrado = f"{e['min']} - {e['max']} mg/dL"
                 break
 
-        # 2. Insulina por Carbohidratos
         dosis_comida = carbos / comida_actual["ratio"] if comida_actual["ratio"] > 0 else 0.0
-
-        # 3. Dosis Total
         total_exacto = dosis_correccion + dosis_comida
         total_redondeado = round(total_exacto / paso_dosis) * paso_dosis
 
@@ -145,41 +151,44 @@ with pestana1:
         st.write(f"- Bolus por comida ({carbos}g / {comida_actual['ratio']}): **+{dosis_comida:.2f} U**")
         st.write(f"- Dosis exacta sin redondear: `{total_exacto:.2f} U`")
 
-# --- PESTAÑA 2: BUSCADOR Y CALCULADORA DE ALIMENTOS ---
+# --- PESTAÑA 2: BUSCADOR EN LÍNEA (OPEN FOOD FACTS) ---
 with pestana2:
-    st.subheader("Base de Alimentos")
+    st.subheader("Buscador de Alimentos En Línea")
     
-    df_alimentos = pd.DataFrame(ALIMENTOS_DEFAULT)
+    busqueda = st.text_input("Buscar alimento o marca (ej. Yoghurt Colun, Pan, Galletas):")
     
-    filtro = st.text_input("Buscar alimento en la base de datos:", "")
-    if filtro:
-        df_filtrado = df_alimentos[df_alimentos["alimento"].str.contains(filtro, case=False, na=False)]
-    else:
-        df_filtrado = df_alimentos
+    if busqueda:
+        resultados = buscar_open_food_facts(busqueda)
+        if resultados:
+            opciones_nombres = [r["nombre"] for r in resultados]
+            prod_seleccionado = st.selectbox("Resultados encontrados:", opciones_nombres)
+            
+            # Obtener datos del producto seleccionado
+            info_prod = next(r for r in resultados if r["nombre"] == prod_seleccionado)
+            st.caption(f"Información nutricional: **{info_prod['carbos_100g']}g de CH** por cada **100g / 100ml**")
+            
+            gramos_ingresados = st.number_input("Gramos/ml que vas a consumir:", min_value=1, max_value=1000, value=100, step=10)
+            carbos_totales_item = round((info_prod["carbos_100g"] * gramos_ingresados) / 100.0, 1)
+            
+            st.write(f"Carbohidratos calculados: **{carbos_totales_item}g CH**")
+            
+            if st.button("Añadir al Plato"):
+                st.session_state.plato.append({
+                    "alimento": info_prod["nombre"],
+                    "gramos": gramos_ingresados,
+                    "total_carbos": carbos_totales_item
+                })
+                st.success(f"Añadido {info_prod['nombre']} ({carbos_totales_item}g CH)")
 
-    alimento_sel = st.selectbox("Selecciona un alimento:", df_filtrado["alimento"].tolist())
-    
-    if alimento_sel:
-        info_alimento = df_filtrado[df_filtrado["alimento"] == alimento_sel].iloc[0]
-        st.caption(f"Porción de referencia: **{info_alimento['porcion']}** = **{info_alimento['carbos_por_porcion']}g CH**")
-        
-        cant_porciones = st.number_input("Cantidad de porciones:", min_value=0.25, max_value=10.0, value=1.0, step=0.25)
-        carbos_calculados = int(info_alimento["carbos_por_porcion"] * cant_porciones)
-        
-        if st.button("Añadir al Plato"):
-            st.session_state.plato.append({
-                "alimento": info_alimento["alimento"],
-                "porciones": cant_porciones,
-                "total_carbos": carbos_calculados
-            })
-            st.success(f"Añadido {info_alimento['alimento']} ({carbos_calculados}g CH)")
+        else:
+            st.warning("No se encontraron resultados para la búsqueda.")
 
     if st.session_state.plato:
         st.markdown("---")
-        st.write("### 🍽️ Tu Plato Actual")
+        st.write("### 🍽️ Plato Actual")
         df_plato = pd.DataFrame(st.session_state.plato)
         st.dataframe(df_plato, use_container_width=True)
-        st.write(f"**Total Carbohidratos del plato:** {sum(df_plato['total_carbos'])}g")
+        st.write(f"**Total Carbohidratos del plato:** {round(sum(df_plato['total_carbos']), 1)}g")
         
         if st.button("Vaciar Plato"):
             st.session_state.plato = []
