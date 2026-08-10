@@ -3,6 +3,7 @@ import os
 from datetime import datetime
 
 import pandas as pd
+import pytz  # Para ajustar la hora local correctamente
 import requests
 import streamlit as st
 
@@ -18,11 +19,19 @@ CONFIG_FILE = "config_dt1.json"
 USDA_API_KEY = st.secrets.get("USDA_API_KEY", "")
 
 # --- CONEXIÓN A GOOGLE SHEETS VÍA APPS SCRIPT ---
-# Intenta obtener la URL desde Secrets; si no está configurada, usa la URL por defecto.
 WEBHOOK_URL = st.secrets.get(
     "WEBHOOK_URL",
     "https://script.google.com/macros/s/AKfycbzqanAiYz52enC0jrrB2sJldaYC-6JQ6QKN9pticGCu2s4NrBGDcAY1EReGzl6QaaTDbg/exec",
 )
+
+# --- MEJORA: FUNCIÓN PARA OBTENER HORA LOCAL CHILE / LATAM ---
+def obtener_fecha_local():
+    """Devuelve la fecha y hora actual ajustada a la zona horaria local."""
+    try:
+        tz = pytz.timezone("America/Santiago") # Cambia según tu zona horaria si es necesario
+        return datetime.now(tz).strftime("%Y-%m-%d %H:%M")
+    except Exception:
+        return datetime.now().strftime("%Y-%m-%d %H:%M")
 
 
 def guardar_registro_google_sheets(fecha, comida, glicemia, carbohidratos, dosis):
@@ -38,6 +47,8 @@ def guardar_registro_google_sheets(fecha, comida, glicemia, carbohidratos, dosis
     try:
         response = requests.post(WEBHOOK_URL, json=datos, timeout=8)
         if response.status_code == 200:
+            # Limpiamos la caché para que el historial se actualice inmediatamente tras guardar
+            obtener_historial_google_sheets.clear()
             return True
         else:
             st.error(f"Error al guardar en la hoja (Código HTTP {response.status_code})")
@@ -47,8 +58,10 @@ def guardar_registro_google_sheets(fecha, comida, glicemia, carbohidratos, dosis
         return False
 
 
+# --- MEJORA: CACHÉ CON TTL DE 60 SEGUNDOS ---
+@st.cache_data(ttl=60, show_spinner=False)
 def obtener_historial_google_sheets():
-    """Lee todos los registros desde la hoja de Google Sheets."""
+    """Lee todos los registros desde la hoja de Google Sheets (Optimizada con Caché)."""
     try:
         response = requests.get(WEBHOOK_URL, timeout=8)
         if response.status_code == 200:
@@ -64,6 +77,7 @@ def borrar_historial_google_sheets():
     try:
         response = requests.post(WEBHOOK_URL, json={"action": "clear"}, timeout=8)
         if response.status_code == 200:
+            obtener_historial_google_sheets.clear()
             return True
     except Exception as e:
         st.error(f"Error al intentar borrar: {e}")
@@ -313,7 +327,7 @@ with pestana1:
         st.write(f"- Bolus por comida ({carbos}g / {comida_actual['ratio']}): **+{dosis_comida:.2f} U**")
         st.write(f"- Dosis exacta sin redondear: `{total_exacto:.2f} U`")
 
-        fecha_str = datetime.now().strftime("%Y-%m-%d %H:%M")
+        fecha_str = obtener_fecha_local()
 
         with st.spinner("Guardando en Google Sheets..."):
             exito = guardar_registro_google_sheets(
@@ -323,7 +337,7 @@ with pestana1:
         if exito:
             st.success("✅ Registro respaldado exitosamente en Google Sheets.")
 
-    # --- MEJORA: SECCIÓN PARA REGISTRO DE INSULINA BASAL ---
+    # --- SECCIÓN PARA REGISTRO DE INSULINA BASAL ---
     st.markdown("---")
     with st.expander("🌙 Registrar Insulina Basal (Lenta / Dosis Diaria)"):
         col_b1, col_b2 = st.columns([2, 1])
@@ -333,7 +347,7 @@ with pestana1:
             )
         with col_b2:
             if st.button("Guardar Basal", use_container_width=True):
-                fecha_str = datetime.now().strftime("%Y-%m-%d %H:%M")
+                fecha_str = obtener_fecha_local()
                 with st.spinner("Guardando basal..."):
                     exito = guardar_registro_google_sheets(
                         fecha_str, "Insulina Basal", 0, 0, dosis_basal
@@ -467,7 +481,7 @@ with pestana3:
         # Convertir columna Fecha a datetime para filtrar y graficar
         df_historial["Fecha_dt"] = pd.to_datetime(df_historial["Fecha"], errors="coerce")
 
-        # --- MEJORA: FILTRO POR FECHAS ---
+        # FILTRO POR FECHAS
         st.write("🔍 **Filtrar por Fecha:**")
         fechas_validas = df_historial["Fecha_dt"].dropna()
         min_f = fechas_validas.min().date() if not fechas_validas.empty else datetime.now().date()
@@ -481,13 +495,23 @@ with pestana3:
         )
         df_filtrado = df_historial.loc[mask].copy()
 
-        # --- MEJORA: GRÁFICO VISUAL DE GLICEMIA ---
+        # --- MEJORA: GRÁFICO SEGURO DE GLICEMIA (CON TRY / EXCEPT) ---
         st.write("📈 **Tendencia de Glicemia (mg/dL):**")
-        df_grafico = df_filtrado[df_filtrado["Comida"] != "Insulina Basal"].copy()
-        if not df_grafico.empty:
-            df_grafico["Glicemia"] = pd.to_numeric(df_grafico["Glicemia"], errors="coerce")
-            df_chart = df_grafico.set_index("Fecha")[["Glicemia"]]
-            st.line_chart(df_chart)
+        try:
+            df_grafico = df_filtrado[df_filtrado["Comida"] != "Insulina Basal"].copy()
+            if not df_grafico.empty:
+                df_grafico["Glicemia"] = pd.to_numeric(df_grafico["Glicemia"], errors="coerce")
+                # Filtramos valores mayores a 0 para no graficar puntos vacíos
+                df_grafico = df_grafico[df_grafico["Glicemia"] > 0]
+                if not df_grafico.empty:
+                    df_chart = df_grafico.set_index("Fecha")[["Glicemia"]]
+                    st.line_chart(df_chart)
+                else:
+                    st.caption("Sin datos numéricos de glicemia en el rango seleccionado.")
+            else:
+                st.caption("No hay registros de glicemia para graficar en este periodo.")
+        except Exception:
+            st.caption("No se pudo renderizar el gráfico con los datos actuales.")
 
         st.dataframe(
             df_filtrado.drop(columns=["Fecha_dt"], errors="ignore"), use_container_width=True
