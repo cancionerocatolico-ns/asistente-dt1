@@ -112,6 +112,7 @@ ALIMENTOS_CASEROS = [
 ]
 
 DEFAULT_CONFIG = {
+    "dosis_basal_fija": 15.0,
     "comidas": [
         {
             "nombre": "Desayuno",
@@ -161,7 +162,7 @@ DEFAULT_CONFIG = {
                 {"min": 201, "max": 999, "dosis": 2.0},
             ],
         },
-    ]
+    ],
 }
 
 
@@ -170,7 +171,8 @@ def cargar_config():
         try:
             with open(CONFIG_FILE, "r") as f:
                 cfg = json.load(f)
-                # Asegurar que existan las colaciones en la config si se usaba una versión anterior
+                if "dosis_basal_fija" not in cfg:
+                    cfg["dosis_basal_fija"] = 15.0
                 nombres = [c["nombre"] for c in cfg.get("comidas", [])]
                 if "Colación" not in nombres:
                     cfg["comidas"].append(DEFAULT_CONFIG["comidas"][3])
@@ -357,11 +359,18 @@ with pestana1:
 
     # --- SECCIÓN PARA REGISTRO DE INSULINA BASAL ---
     st.markdown("---")
-    with st.expander("🌙 Registrar Insulina Basal (Lenta / Dosis Diaria)"):
+    with st.expander("🌙 Registrar Insulina Basal (Dosis Fija Diario)"):
+        basal_activa = st.session_state.config.get("dosis_basal_fija", 15.0)
+        st.info(f"📋 Dosis prescrita actual: **{basal_activa} U**")
+
         col_b1, col_b2 = st.columns([2, 1])
         with col_b1:
             dosis_basal = st.number_input(
-                "Unidades de Insulina Basal:", min_value=1.0, max_value=100.0, value=15.0, step=1.0
+                "Dosis a aplicar hoy (U):",
+                min_value=1.0,
+                max_value=100.0,
+                value=float(basal_activa),
+                step=0.5,
             )
         with col_b2:
             if st.button("Guardar Basal", use_container_width=True):
@@ -371,7 +380,7 @@ with pestana1:
                         fecha_str, "Insulina Basal", 0, 0, dosis_basal
                     )
                 if exito:
-                    st.success("✅ Dosis basal guardada.")
+                    st.success(f"✅ Dosis basal ({dosis_basal} U) registrada en el historial.")
 
 # --- PESTAÑA 2: BUSCADOR DE ALIMENTOS ---
 with pestana2:
@@ -412,7 +421,7 @@ with pestana2:
     elif origen == "📷 Escanear Código de Barras":
         st.info("💡 **Consejo de escaneo:** Asegúrate de enfocar con buena iluminación y mantener firme la cámara.")
         foto = st.camera_input("Enfoca el código de barras del producto")
-        
+
         if foto:
             try:
                 imagen = Image.open(foto)
@@ -454,13 +463,13 @@ with pestana2:
                     else:
                         st.warning("⚠️ Producto no encontrado en la base de datos pública.")
                         st.write("Puedes ingresar la información manualmente a continuación:")
-                        
+
                         col_m1, col_m2 = st.columns(2)
                         with col_m1:
                             nombre_manual = st.text_input("Nombre del alimento:", value="Producto Escaneado")
                         with col_m2:
                             carbos_manual = st.number_input("Carbohidratos calculados (g):", min_value=0.0, value=10.0, step=1.0)
-                            
+
                         if st.button("Añadir Alimento Manualmente", use_container_width=True):
                             st.session_state.plato.append(
                                 {
@@ -563,7 +572,7 @@ with pestana3:
         df_historial = obtener_historial_google_sheets()
 
     if not df_historial.empty and "Fecha" in df_historial.columns:
-        
+
         df_historial["Fecha_dt"] = pd.to_datetime(df_historial["Fecha"], errors="coerce")
 
         # FILTRO POR FECHAS
@@ -637,6 +646,19 @@ with pestana3:
 
 # --- PESTAÑA 4: CONFIGURACIÓN ---
 with pestana4:
+    st.subheader("Configuración General")
+
+    with st.expander("💉 Dosis Prescrita de Insulina Basal"):
+        nueva_basal = st.number_input(
+            "Dosis basal fija diaria (U):",
+            min_value=1.0,
+            max_value=100.0,
+            value=float(st.session_state.config.get("dosis_basal_fija", 15.0)),
+            step=0.5,
+        )
+        st.session_state.config["dosis_basal_fija"] = nueva_basal
+
+    st.markdown("---")
     st.subheader("Configuración de Rangos y Ratios")
     for ci, c in enumerate(st.session_state.config["comidas"]):
         with st.expander(f"⚙️ Configurar Ratios y Rangos para {c['nombre']}"):
