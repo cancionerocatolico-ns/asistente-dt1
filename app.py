@@ -23,7 +23,7 @@ USDA_API_KEY = st.secrets.get("USDA_API_KEY", "")
 # --- CONEXIÓN A GOOGLE SHEETS VÍA APPS SCRIPT ---
 WEBHOOK_URL = st.secrets.get(
     "WEBHOOK_URL",
-    "https://script.google.com/macros/s/AKfycbzqanAiYz52enC0jrrB2sJldaYC-6JQ6QKN9pticGCu2s4NrBGDcAY1EReGzl6QaaTDbg/exec",
+    "https://script.google.com/macros/s/AKfycbyvD3sNgP0C5fTapNkfLKJXqidvrKZ9pm5X3DVeB-i2ex8QbS7BddFiZpfGkeaQnjhZlQ/exec",
 )
 
 
