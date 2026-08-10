@@ -62,28 +62,35 @@ def guardar_config(config_data):
     with open(CONFIG_FILE, "w") as f:
         json.dump(config_data, f, indent=4)
 
-# Función para consultar Open Food Facts API
+# Función optimizada para consultar Open Food Facts con reintentos y timeout amplio
 def buscar_open_food_facts(query):
     url = f"https://world.openfoodfacts.org/cgi/search.pl?search_terms={query}&search_simple=1&action=process&json=1&page_size=10"
-    headers = {"User-Agent": "MiControlDT1App/1.0"}
-    try:
-        response = requests.get(url, headers=headers, timeout=5)
-        if response.status_code == 200:
-            datos = response.json()
-            productos = []
-            for p in datos.get("products", []):
-                nombre = p.get("product_name", "Producto sin nombre")
-                marca = p.get("brands", "")
-                carbos_100g = p.get("nutriments", {}).get("carbohydrates_100g", 0.0)
-                
-                nombre_completo = f"{nombre} ({marca})" if marca else nombre
-                productos.append({
-                    "nombre": nombre_completo,
-                    "carbos_100g": float(carbos_100g) if carbos_100g is not None else 0.0
-                })
-            return productos
-    except Exception as e:
-        st.error(f"Error al conectar con la base de datos: {e}")
+    headers = {"User-Agent": "MiControlDT1App/1.0 (streamlit-app)"}
+    
+    # Intenta hasta 2 veces si hay timeout
+    for intento in range(2):
+        try:
+            response = requests.get(url, headers=headers, timeout=10)
+            if response.status_code == 200:
+                datos = response.json()
+                productos = []
+                for p in datos.get("products", []):
+                    nombre = p.get("product_name", "Producto sin nombre")
+                    marca = p.get("brands", "")
+                    carbos_100g = p.get("nutriments", {}).get("carbohydrates_100g", 0.0)
+                    
+                    nombre_completo = f"{nombre} ({marca})" if marca else nombre
+                    productos.append({
+                        "nombre": nombre_completo,
+                        "carbos_100g": float(carbos_100g) if carbos_100g is not None else 0.0
+                    })
+                return productos
+        except requests.exceptions.Timeout:
+            if intento == 1:
+                st.warning("⏱️ El servidor de alimentos tardó demasiado en responder. Intenta realizar la búsqueda de nuevo.")
+        except Exception as e:
+            st.error("⚠️ Error de conexión al consultar el servidor de alimentos.")
+            break
     return []
 
 if "config" not in st.session_state:
@@ -163,7 +170,6 @@ with pestana2:
             opciones_nombres = [r["nombre"] for r in resultados]
             prod_seleccionado = st.selectbox("Resultados encontrados:", opciones_nombres)
             
-            # Obtener datos del producto seleccionado
             info_prod = next(r for r in resultados if r["nombre"] == prod_seleccionado)
             st.caption(f"Información nutricional: **{info_prod['carbos_100g']}g de CH** por cada **100g / 100ml**")
             
@@ -181,7 +187,7 @@ with pestana2:
                 st.success(f"Añadido {info_prod['nombre']} ({carbos_totales_item}g CH)")
 
         else:
-            st.warning("No se encontraron resultados para la búsqueda.")
+            st.info("No se encontraron productos o el servidor de búsqueda no respondió a tiempo.")
 
     if st.session_state.plato:
         st.markdown("---")
