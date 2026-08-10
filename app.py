@@ -1,3 +1,4 @@
+import hashlib
 import json
 import os
 from datetime import datetime
@@ -9,7 +10,7 @@ import streamlit as st
 from PIL import Image
 from pyzbar.pyzbar import decode
 
-# Configuración de la página
+# --- CONFIGURACIÓN DE LA PÁGINA ---
 st.set_page_config(
     page_title="Mi Control DT1",
     page_icon="💉",
@@ -26,6 +27,45 @@ WEBHOOK_URL = st.secrets.get(
 )
 
 
+# --- FUNCIONES DE AUTENTICACIÓN ---
+def generar_hash_password(password):
+    """Genera un hash SHA-256 seguro para la contraseña."""
+    return hashlib.sha256(password.encode("utf-8")).hexdigest()
+
+
+def autenticar_usuario(usuario, password):
+    """Verifica las credenciales del usuario con Google Sheets."""
+    data = {
+        "action": "login",
+        "usuario": usuario.strip(),
+        "password_hash": generar_hash_password(password),
+    }
+    try:
+        res = requests.post(WEBHOOK_URL, json=data, timeout=8)
+        if res.status_code == 200:
+            return res.json().get("status")
+    except Exception:
+        pass
+    return "error"
+
+
+def registrar_nuevo_usuario(usuario, password):
+    """Registra un nuevo usuario con su contraseña encriptada."""
+    data = {
+        "action": "register",
+        "usuario": usuario.strip(),
+        "password_hash": generar_hash_password(password),
+    }
+    try:
+        res = requests.post(WEBHOOK_URL, json=data, timeout=8)
+        if res.status_code == 200:
+            return res.json().get("status")
+    except Exception:
+        pass
+    return "error"
+
+
+# --- FUNCIONES AUXILIARES ---
 def obtener_fecha_local():
     """Devuelve la fecha y hora actual ajustada a la zona horaria local."""
     try:
@@ -279,21 +319,59 @@ if "usuario_activo" not in st.session_state:
 
 if not st.session_state.usuario_activo:
     st.title("💉 Mi Control DT1")
-    st.subheader("Inicio de Sesión")
 
-    with st.form("login_form"):
-        nombre_ingresado = st.text_input("Nombre o Nombre de usuario:")
-        submitted = st.form_submit_button("Ingresar a mi perfil", use_container_width=True)
+    tab_login, tab_registro = st.tabs(["🔑 Iniciar Sesión", "👤 Crear Cuenta"])
 
-        if submitted:
-            if nombre_ingresado.strip():
-                user_clean = nombre_ingresado.strip().title()
-                st.session_state.usuario_activo = user_clean
-                st.session_state.config = cargar_config_usuario(user_clean)
-                st.session_state.plato = []
-                st.rerun()
-            else:
-                st.warning("Por favor ingresa un usuario válido.")
+    with tab_login:
+        with st.form("form_login"):
+            user_input = st.text_input("Usuario:")
+            pass_input = st.text_input("Contraseña:", type="password")
+            submit_login = st.form_submit_button("Ingresar", use_container_width=True)
+
+            if submit_login:
+                if user_input and pass_input:
+                    with st.spinner("Verificando..."):
+                        resultado = autenticar_usuario(user_input, pass_input)
+
+                    if resultado == "success":
+                        st.session_state.usuario_activo = user_input.strip().title()
+                        st.session_state.config = cargar_config_usuario(user_input)
+                        st.session_state.plato = []
+                        st.rerun()
+                    elif resultado == "wrong_pass":
+                        st.error("❌ Contraseña incorrecta.")
+                    elif resultado == "not_found":
+                        st.warning("⚠️ El usuario no existe. Crea una cuenta primero.")
+                    else:
+                        st.error("Error al conectar con la base de datos de usuarios.")
+                else:
+                    st.warning("Completa todos los campos.")
+
+    with tab_registro:
+        with st.form("form_registro"):
+            new_user = st.text_input("Nuevo Usuario:")
+            new_pass = st.text_input("Nueva Contraseña:", type="password")
+            confirm_pass = st.text_input("Confirmar Contraseña:", type="password")
+            submit_reg = st.form_submit_button("Registrarme", use_container_width=True)
+
+            if submit_reg:
+                if new_user and new_pass and confirm_pass:
+                    if new_pass != confirm_pass:
+                        st.error("❌ Las contraseñas no coinciden.")
+                    elif len(new_pass) < 4:
+                        st.warning("Mínimo 4 caracteres para la contraseña.")
+                    else:
+                        with st.spinner("Creando cuenta..."):
+                            res_reg = registrar_nuevo_usuario(new_user, new_pass)
+
+                        if res_reg == "success":
+                            st.success("✅ ¡Cuenta creada con éxito! Ya puedes iniciar sesión.")
+                        elif res_reg == "exists":
+                            st.warning("⚠️ Ese nombre de usuario ya está registrado.")
+                        else:
+                            st.error("Error al registrar el usuario.")
+                else:
+                    st.warning("Por favor completa todos los campos.")
     st.stop()
 
 # --- INTERFAZ PRINCIPAL CON USUARIO ACTIVO ---
