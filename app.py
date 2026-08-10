@@ -3,9 +3,11 @@ import os
 from datetime import datetime
 
 import pandas as pd
-import pytz  # Para ajustar la hora local correctamente
+import pytz
 import requests
 import streamlit as st
+from PIL import Image
+from pyzbar.pyzbar import decode
 
 # Configuración de la página
 st.set_page_config(
@@ -24,11 +26,11 @@ WEBHOOK_URL = st.secrets.get(
     "https://script.google.com/macros/s/AKfycbzqanAiYz52enC0jrrB2sJldaYC-6JQ6QKN9pticGCu2s4NrBGDcAY1EReGzl6QaaTDbg/exec",
 )
 
-# --- MEJORA: FUNCIÓN PARA OBTENER HORA LOCAL CHILE / LATAM ---
+
 def obtener_fecha_local():
     """Devuelve la fecha y hora actual ajustada a la zona horaria local."""
     try:
-        tz = pytz.timezone("America/Santiago") # Cambia según tu zona horaria si es necesario
+        tz = pytz.timezone("America/Santiago")
         return datetime.now(tz).strftime("%Y-%m-%d %H:%M")
     except Exception:
         return datetime.now().strftime("%Y-%m-%d %H:%M")
@@ -47,7 +49,6 @@ def guardar_registro_google_sheets(fecha, comida, glicemia, carbohidratos, dosis
     try:
         response = requests.post(WEBHOOK_URL, json=datos, timeout=8)
         if response.status_code == 200:
-            # Limpiamos la caché para que el historial se actualice inmediatamente tras guardar
             obtener_historial_google_sheets.clear()
             return True
         else:
@@ -58,7 +59,6 @@ def guardar_registro_google_sheets(fecha, comida, glicemia, carbohidratos, dosis
         return False
 
 
-# --- MEJORA: CACHÉ CON TTL DE 60 SEGUNDOS ---
 @st.cache_data(ttl=60, show_spinner=False)
 def obtener_historial_google_sheets():
     """Lee todos los registros desde la hoja de Google Sheets (Optimizada con Caché)."""
@@ -365,6 +365,7 @@ with pestana2:
             "Tabla Rápida Casera",
             "USDA (Traducida al Español)",
             "Open Food Facts (Marcas/Empaquetados)",
+            "📷 Escanear Código de Barras",
         ],
         horizontal=False,
     )
@@ -389,6 +390,53 @@ with pestana2:
                 }
             )
             st.success(f"Añadido {item['alimento']} ({total_ch}g CH)")
+
+    elif origen == "📷 Escanear Código de Barras":
+        foto = st.camera_input("Enfoca el código de barras del producto")
+        if foto:
+            try:
+                imagen = Image.open(foto)
+                codigos = decode(imagen)
+                if codigos:
+                    codigo_barras = codigos[0].data.decode("utf-8")
+                    st.success(f"📱 Código detectado: `{codigo_barras}`")
+
+                    url = f"https://world.openfoodfacts.org/api/v0/product/{codigo_barras}.json"
+                    headers = {"User-Agent": "MiControlDT1App/1.0 (streamlit-app)"}
+                    res = requests.get(url, headers=headers, timeout=8)
+
+                    if res.status_code == 200 and res.json().get("status") == 1:
+                        producto = res.json()["product"]
+                        nombre_prod = producto.get("product_name", "Producto sin nombre")
+                        marca_prod = producto.get("brands", "")
+                        nombre_completo = f"{nombre_prod} ({marca_prod})" if marca_prod else nombre_prod
+
+                        nutriments = producto.get("nutriments", {})
+                        carbos_100g = float(nutriments.get("carbohydrates_100g", 0.0) or 0.0)
+
+                        st.write(f"**Alimento:** {nombre_completo}")
+                        st.metric("Carbohidratos por 100g", f"{carbos_100g}g")
+
+                        gramos = st.number_input(
+                            "Gramos/ml a consumir:", min_value=1, max_value=1000, value=100, step=10
+                        )
+                        total_ch = round((carbos_100g * gramos) / 100.0, 1)
+
+                        if st.button("Añadir al Plato", use_container_width=True):
+                            st.session_state.plato.append(
+                                {
+                                    "alimento": nombre_completo,
+                                    "detalle": f"{gramos}g/ml",
+                                    "total_carbos": total_ch,
+                                }
+                            )
+                            st.success(f"Añadido {nombre_completo} ({total_ch}g CH)")
+                    else:
+                        st.error("Producto no encontrado en Open Food Facts.")
+                else:
+                    st.warning("⚠️ No se detectó código de barras. Intenta tomar la foto con más luz y enfoque.")
+            except Exception as e:
+                st.error(f"Error al procesar la imagen: {e}")
 
     else:
         busqueda = st.text_input("Buscar alimento:")
@@ -478,7 +526,6 @@ with pestana3:
 
     if not df_historial.empty and "Fecha" in df_historial.columns:
         
-        # Convertir columna Fecha a datetime para filtrar y graficar
         df_historial["Fecha_dt"] = pd.to_datetime(df_historial["Fecha"], errors="coerce")
 
         # FILTRO POR FECHAS
@@ -489,19 +536,17 @@ with pestana3:
 
         f_inicio, f_fin = st.date_input("Rango:", value=(min_f, max_f))
 
-        # Filtrar dataframe
         mask = (df_historial["Fecha_dt"].dt.date >= f_inicio) & (
             df_historial["Fecha_dt"].dt.date <= f_fin
         )
         df_filtrado = df_historial.loc[mask].copy()
 
-        # --- MEJORA: GRÁFICO SEGURO DE GLICEMIA (CON TRY / EXCEPT) ---
+        # GRÁFICO SEGURO DE GLICEMIA
         st.write("📈 **Tendencia de Glicemia (mg/dL):**")
         try:
             df_grafico = df_filtrado[df_filtrado["Comida"] != "Insulina Basal"].copy()
             if not df_grafico.empty:
                 df_grafico["Glicemia"] = pd.to_numeric(df_grafico["Glicemia"], errors="coerce")
-                # Filtramos valores mayores a 0 para no graficar puntos vacíos
                 df_grafico = df_grafico[df_grafico["Glicemia"] > 0]
                 if not df_grafico.empty:
                     df_chart = df_grafico.set_index("Fecha")[["Glicemia"]]
