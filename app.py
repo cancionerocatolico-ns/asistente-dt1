@@ -276,8 +276,8 @@ if "plato" not in st.session_state:
 
 st.title("💉 Mi Control DT1")
 
-pestana1, pestana2, pestana3, pestana4 = st.tabs(
-    ["🧮 Calculadora", "🥗 Alimentos", "📜 Historial", "⚙️ Configuración"]
+pestana1, pestana2, pestana3, pestana4, pestana5 = st.tabs(
+    ["🧮 Calculadora", "🥗 Alimentos", "📜 Historial", "📊 Estadísticas", "⚙️ Configuración"]
 )
 
 # --- PESTAÑA 1: CALCULADORA ---
@@ -644,8 +644,73 @@ with pestana3:
     else:
         st.info("No hay registros guardados en Google Sheets por el momento.")
 
-# --- PESTAÑA 4: CONFIGURACIÓN ---
+# --- PESTAÑA 4: ESTADÍSTICAS Y ANÁLISIS ---
 with pestana4:
+    st.subheader("📊 Estadísticas y Análisis de Hábitos")
+
+    df_hist = obtener_historial_google_sheets()
+
+    # --- 1. MÉTRICAS DE GLICEMIA Y DOSIS ---
+    if not df_hist.empty and "Glicemia" in df_hist.columns:
+        st.write("### 🩺 Control Glicémico")
+
+        df_glic = df_hist[df_hist["Comida"] != "Insulina Basal"].copy()
+        df_glic["Glicemia"] = pd.to_numeric(df_glic["Glicemia"], errors="coerce")
+        df_glic = df_glic.dropna(subset=["Glicemia"])
+
+        if not df_glic.empty:
+            promedio_glic = round(df_glic["Glicemia"].mean(), 1)
+            total_mediciones = len(df_glic)
+
+            en_rango = len(df_glic[(df_glic["Glicemia"] >= 70) & (df_glic["Glicemia"] <= 180)])
+            hipo = len(df_glic[df_glic["Glicemia"] < 70])
+            hiper = len(df_glic[df_glic["Glicemia"] > 180])
+
+            col_m1, col_m2, col_m3, col_m4 = st.columns(4)
+            col_m1.metric("Glicemia Promedio", f"{promedio_glic} mg/dL")
+            col_m2.metric("En Rango (70-180)", f"{round((en_rango/total_mediciones)*100)}%")
+            col_m3.metric("Bajas (<70)", f"{round((hipo/total_mediciones)*100)}%")
+            col_m4.metric("Altas (>180)", f"{round((hiper/total_mediciones)*100)}%")
+
+            st.markdown("---")
+
+            # --- 2. HÁBITOS DE ALIMENTACIÓN Y CARBOHIDRATOS ---
+            st.write("### 🍽️ Análisis de Carbohidratos")
+
+            df_carb = df_glic.copy()
+            df_carb["Carbohidratos"] = pd.to_numeric(df_carb["Carbohidratos"], errors="coerce")
+
+            col_c1, col_c2 = st.columns(2)
+
+            with col_c1:
+                st.write("**Promedio de Carbohidratos por Comida (g):**")
+                prom_por_comida = df_carb.groupby("Comida")["Carbohidratos"].mean().round(1)
+                st.bar_chart(prom_por_comida)
+
+            with col_c2:
+                st.write("**Frecuencia de Registros por Horario:**")
+                frecuencia_comida = df_carb["Comida"].value_counts()
+                st.bar_chart(frecuencia_comida)
+        else:
+            st.info("No hay suficientes registros numéricos de glicemia para mostrar métricas.")
+    else:
+        st.info("Aún no hay suficientes datos registrados en Google Sheets para calcular las estadísticas.")
+
+    # --- 3. ALIMENTOS MÁS CONSUMIDOS (DESDE EL PLATO ACTIVO) ---
+    st.markdown("---")
+    st.write("### 🥗 Registro de Alimentos Frecuentes")
+
+    if st.session_state.plato:
+        st.write("**Alimentos en tu plato actual:**")
+        df_p = pd.DataFrame(st.session_state.plato)
+        conteo_plato = df_p.groupby("alimento")["total_carbos"].agg(["count", "sum"]).reset_index()
+        conteo_plato.columns = ["Alimento", "Veces añadido", "Total CH (g)"]
+        st.dataframe(conteo_plato, use_container_width=True)
+    else:
+        st.info("💡 A medida que registres comidas en la Calculadora y agregues alimentos al plato, los patrones de consumo se irán analizando en esta sección.")
+
+# --- PESTAÑA 5: CONFIGURACIÓN ---
+with pestana5:
     st.subheader("Configuración General")
 
     with st.expander("💉 Dosis Prescrita de Insulina Basal"):
