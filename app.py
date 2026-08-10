@@ -17,7 +17,6 @@ st.set_page_config(
     initial_sidebar_state="collapsed",
 )
 
-CONFIG_FILE = "config_dt1.json"
 USDA_API_KEY = st.secrets.get("USDA_API_KEY", "")
 
 # --- CONEXIÓN A GOOGLE SHEETS VÍA APPS SCRIPT ---
@@ -36,10 +35,11 @@ def obtener_fecha_local():
         return datetime.now().strftime("%Y-%m-%d %H:%M")
 
 
-def guardar_registro_google_sheets(fecha, comida, glicemia, carbohidratos, dosis):
-    """Envía los datos registrados directamente a la hoja de Google Sheets."""
+def guardar_registro_google_sheets(fecha, usuario, comida, glicemia, carbohidratos, dosis):
+    """Envía los datos registrados con la marca de usuario a Google Sheets."""
     datos = {
         "fecha": str(fecha),
+        "usuario": usuario,
         "comida": comida,
         "glicemia": int(glicemia),
         "carbohidratos": float(carbohidratos),
@@ -60,10 +60,11 @@ def guardar_registro_google_sheets(fecha, comida, glicemia, carbohidratos, dosis
 
 
 @st.cache_data(ttl=60, show_spinner=False)
-def obtener_historial_google_sheets():
-    """Lee todos los registros desde la hoja de Google Sheets (Optimizada con Caché)."""
+def obtener_historial_google_sheets(usuario):
+    """Lee únicamente los registros del usuario autenticado desde Google Sheets."""
     try:
-        response = requests.get(WEBHOOK_URL, timeout=8)
+        url = f"{WEBHOOK_URL}?usuario={requests.utils.quote(usuario)}"
+        response = requests.get(url, timeout=8)
         if response.status_code == 200:
             datos = response.json()
             return pd.DataFrame(datos)
@@ -72,10 +73,12 @@ def obtener_historial_google_sheets():
     return pd.DataFrame()
 
 
-def borrar_historial_google_sheets():
-    """Limpia todos los datos guardados en la hoja de Google Sheets."""
+def borrar_historial_google_sheets(usuario):
+    """Limpia los datos del usuario actual en Google Sheets."""
     try:
-        response = requests.post(WEBHOOK_URL, json={"action": "clear"}, timeout=8)
+        response = requests.post(
+            WEBHOOK_URL, json={"action": "clear", "usuario": usuario}, timeout=8
+        )
         if response.status_code == 200:
             obtener_historial_google_sheets.clear()
             return True
@@ -166,10 +169,11 @@ DEFAULT_CONFIG = {
 }
 
 
-def cargar_config():
-    if os.path.exists(CONFIG_FILE):
+def cargar_config_usuario(usuario):
+    filename = f"config_{usuario.lower().strip()}.json"
+    if os.path.exists(filename):
         try:
-            with open(CONFIG_FILE, "r") as f:
+            with open(filename, "r") as f:
                 cfg = json.load(f)
                 if "dosis_basal_fija" not in cfg:
                     cfg["dosis_basal_fija"] = 15.0
@@ -182,8 +186,9 @@ def cargar_config():
     return DEFAULT_CONFIG
 
 
-def guardar_config(config_data):
-    with open(CONFIG_FILE, "w") as f:
+def guardar_config_usuario(usuario, config_data):
+    filename = f"config_{usuario.lower().strip()}.json"
+    with open(filename, "w") as f:
         json.dump(config_data, f, indent=4)
 
 
@@ -268,13 +273,37 @@ def buscar_usda(query):
     return []
 
 
-if "config" not in st.session_state:
-    st.session_state.config = cargar_config()
+# --- CONTROL DE SESIÓN Y AUTENTICACIÓN ---
+if "usuario_activo" not in st.session_state:
+    st.session_state.usuario_activo = None
 
-if "plato" not in st.session_state:
-    st.session_state.plato = []
+if not st.session_state.usuario_activo:
+    st.title("💉 Mi Control DT1")
+    st.subheader("Inicio de Sesión")
 
+    with st.form("login_form"):
+        nombre_ingresado = st.text_input("Nombre o Nombre de usuario:")
+        submitted = st.form_submit_button("Ingresar a mi perfil", use_container_width=True)
+
+        if submitted:
+            if nombre_ingresado.strip():
+                user_clean = nombre_ingresado.strip().title()
+                st.session_state.usuario_activo = user_clean
+                st.session_state.config = cargar_config_usuario(user_clean)
+                st.session_state.plato = []
+                st.rerun()
+            else:
+                st.warning("Por favor ingresa un usuario válido.")
+    st.stop()
+
+# --- INTERFAZ PRINCIPAL CON USUARIO ACTIVO ---
 st.title("💉 Mi Control DT1")
+st.caption(f"👤 Perfil activo: **{st.session_state.usuario_activo}**")
+
+if st.sidebar.button("Cerrar Sesión", use_container_width=True):
+    st.session_state.usuario_activo = None
+    st.session_state.config = None
+    st.rerun()
 
 pestana1, pestana2, pestana3, pestana4, pestana5 = st.tabs(
     ["🧮 Calculadora", "🥗 Alimentos", "📜 Historial", "📊 Estadísticas", "⚙️ Configuración"]
@@ -351,7 +380,12 @@ with pestana1:
 
         with st.spinner("Guardando en Google Sheets..."):
             exito = guardar_registro_google_sheets(
-                fecha_str, comida_sel_nombre, glicemia, carbos, total_redondeado
+                fecha_str,
+                st.session_state.usuario_activo,
+                comida_sel_nombre,
+                glicemia,
+                carbos,
+                total_redondeado,
             )
 
         if exito:
@@ -377,7 +411,12 @@ with pestana1:
                 fecha_str = obtener_fecha_local()
                 with st.spinner("Guardando basal..."):
                     exito = guardar_registro_google_sheets(
-                        fecha_str, "Insulina Basal", 0, 0, dosis_basal
+                        fecha_str,
+                        st.session_state.usuario_activo,
+                        "Insulina Basal",
+                        0,
+                        0,
+                        dosis_basal,
                     )
                 if exito:
                     st.success(f"✅ Dosis basal ({dosis_basal} U) registrada en el historial.")
@@ -419,7 +458,7 @@ with pestana2:
             st.success(f"Añadido {item['alimento']} ({total_ch}g CH)")
 
     elif origen == "📷 Escanear Código de Barras":
-        st.info("💡 **Consejo de escaneo:** Asegúrate de enfocar con buena iluminación y mantener firme la cámara.")
+        st.info("💡 **Consejo de escaneo:** Enfoca el código con buena iluminación.")
         foto = st.camera_input("Enfoca el código de barras del producto")
 
         if foto:
@@ -438,7 +477,9 @@ with pestana2:
                         producto = res.json()["product"]
                         nombre_prod = producto.get("product_name", "Producto sin nombre")
                         marca_prod = producto.get("brands", "")
-                        nombre_completo = f"{nombre_prod} ({marca_prod})" if marca_prod else nombre_prod
+                        nombre_completo = (
+                            f"{nombre_prod} ({marca_prod})" if marca_prod else nombre_prod
+                        )
 
                         nutriments = producto.get("nutriments", {})
                         carbos_100g = float(nutriments.get("carbohydrates_100g", 0.0) or 0.0)
@@ -461,27 +502,7 @@ with pestana2:
                             )
                             st.success(f"Añadido {nombre_completo} ({total_ch}g CH)")
                     else:
-                        st.warning("⚠️ Producto no encontrado en la base de datos pública.")
-                        st.write("Puedes ingresar la información manualmente a continuación:")
-
-                        col_m1, col_m2 = st.columns(2)
-                        with col_m1:
-                            nombre_manual = st.text_input("Nombre del alimento:", value="Producto Escaneado")
-                        with col_m2:
-                            carbos_manual = st.number_input("Carbohidratos calculados (g):", min_value=0.0, value=10.0, step=1.0)
-
-                        if st.button("Añadir Alimento Manualmente", use_container_width=True):
-                            st.session_state.plato.append(
-                                {
-                                    "alimento": nombre_manual,
-                                    "detalle": "Entrada Manual",
-                                    "total_carbos": carbos_manual,
-                                }
-                            )
-                            st.success(f"Añadido {nombre_manual} ({carbos_manual}g CH)")
-
-                else:
-                    st.warning("⚠️ No se detectó código de barras. Intenta tomar la foto con más luz o enfocar más cerca.")
+                        st.warning("⚠️ Producto no encontrado.")
             except Exception as e:
                 st.error(f"Error al procesar la imagen: {e}")
 
@@ -566,10 +587,10 @@ with pestana2:
 
 # --- PESTAÑA 3: HISTORIAL DESDE GOOGLE SHEETS ---
 with pestana3:
-    st.subheader("Historial de Mediciones (Google Sheets)")
+    st.subheader(f"Historial de {st.session_state.usuario_activo}")
 
     with st.spinner("Cargando historial desde Google Sheets..."):
-        df_historial = obtener_historial_google_sheets()
+        df_historial = obtener_historial_google_sheets(st.session_state.usuario_activo)
 
     if not df_historial.empty and "Fecha" in df_historial.columns:
 
@@ -606,51 +627,55 @@ with pestana3:
             st.caption("No se pudo renderizar el gráfico con los datos actuales.")
 
         st.dataframe(
-            df_filtrado.drop(columns=["Fecha_dt"], errors="ignore"), use_container_width=True
+            df_filtrado.drop(columns=["Fecha_dt", "Usuario"], errors="ignore"),
+            use_container_width=True,
         )
 
         st.markdown("---")
         col_d1, col_d2 = st.columns(2)
 
         with col_d1:
-            csv_data = df_filtrado.drop(columns=["Fecha_dt"], errors="ignore").to_csv(index=False).encode("utf-8")
+            csv_data = (
+                df_filtrado.drop(columns=["Fecha_dt"], errors="ignore")
+                .to_csv(index=False)
+                .encode("utf-8")
+            )
             st.download_button(
                 label="⬇️ Descargar Historial (CSV)",
                 data=csv_data,
-                file_name=f"historial_dt1_{datetime.now().strftime('%Y%m%d')}.csv",
+                file_name=f"historial_{st.session_state.usuario_activo}_{datetime.now().strftime('%Y%m%d')}.csv",
                 mime="text/csv",
                 use_container_width=True,
             )
 
         with col_d2:
-            if st.button("🗑️ Borrar Historial en Google Sheets", type="secondary", use_container_width=True):
+            if st.button("🗑️ Borrar Mi Historial", type="secondary", use_container_width=True):
                 st.session_state.confirmar_borrado = True
 
         if st.session_state.get("confirmar_borrado", False):
-            st.warning("⚠️ ¿Estás seguro de que deseas vaciar toda la hoja en Google Sheets?")
+            st.warning(f"⚠️ ¿Eliminar los registros de {st.session_state.usuario_activo}?")
             col_b1, col_b2 = st.columns(2)
             with col_b1:
-                if st.button("Sí, Eliminar Definitivamente", type="primary", use_container_width=True):
-                    if borrar_historial_google_sheets():
+                if st.button("Sí, Eliminar Mis Datos", type="primary", use_container_width=True):
+                    if borrar_historial_google_sheets(st.session_state.usuario_activo):
                         st.session_state.confirmar_borrado = False
-                        st.success("Historial eliminado correctamente de Google Sheets.")
+                        st.success("Tus registros se han eliminado de la hoja.")
                         st.rerun()
                     else:
-                        st.error("No se pudo borrar la hoja.")
+                        st.error("No se pudo borrar la información.")
             with col_b2:
                 if st.button("Cancelar", use_container_width=True):
                     st.session_state.confirmar_borrado = False
                     st.rerun()
     else:
-        st.info("No hay registros guardados en Google Sheets por el momento.")
+        st.info("No hay registros guardados en tu perfil por el momento.")
 
 # --- PESTAÑA 4: ESTADÍSTICAS Y ANÁLISIS ---
 with pestana4:
-    st.subheader("📊 Estadísticas y Análisis de Hábitos")
+    st.subheader(f"📊 Análisis de {st.session_state.usuario_activo}")
 
-    df_hist = obtener_historial_google_sheets()
+    df_hist = obtener_historial_google_sheets(st.session_state.usuario_activo)
 
-    # --- 1. MÉTRICAS DE GLICEMIA Y DOSIS ---
     if not df_hist.empty and "Glicemia" in df_hist.columns:
         st.write("### 🩺 Control Glicémico")
 
@@ -674,44 +699,27 @@ with pestana4:
 
             st.markdown("---")
 
-            # --- 2. HÁBITOS DE ALIMENTACIÓN Y CARBOHIDRATOS ---
             st.write("### 🍽️ Análisis de Carbohidratos")
-
             df_carb = df_glic.copy()
             df_carb["Carbohidratos"] = pd.to_numeric(df_carb["Carbohidratos"], errors="coerce")
 
             col_c1, col_c2 = st.columns(2)
 
             with col_c1:
-                st.write("**Promedio de Carbohidratos por Comida (g):**")
+                st.write("**Promedio CH por Comida (g):**")
                 prom_por_comida = df_carb.groupby("Comida")["Carbohidratos"].mean().round(1)
                 st.bar_chart(prom_por_comida)
 
             with col_c2:
-                st.write("**Frecuencia de Registros por Horario:**")
+                st.write("**Frecuencia de Registros:**")
                 frecuencia_comida = df_carb["Comida"].value_counts()
                 st.bar_chart(frecuencia_comida)
-        else:
-            st.info("No hay suficientes registros numéricos de glicemia para mostrar métricas.")
     else:
-        st.info("Aún no hay suficientes datos registrados en Google Sheets para calcular las estadísticas.")
-
-    # --- 3. ALIMENTOS MÁS CONSUMIDOS (DESDE EL PLATO ACTIVO) ---
-    st.markdown("---")
-    st.write("### 🥗 Registro de Alimentos Frecuentes")
-
-    if st.session_state.plato:
-        st.write("**Alimentos en tu plato actual:**")
-        df_p = pd.DataFrame(st.session_state.plato)
-        conteo_plato = df_p.groupby("alimento")["total_carbos"].agg(["count", "sum"]).reset_index()
-        conteo_plato.columns = ["Alimento", "Veces añadido", "Total CH (g)"]
-        st.dataframe(conteo_plato, use_container_width=True)
-    else:
-        st.info("💡 A medida que registres comidas en la Calculadora y agregues alimentos al plato, los patrones de consumo se irán analizando en esta sección.")
+        st.info("Aún no tienes suficientes registros para mostrar estadísticas.")
 
 # --- PESTAÑA 5: CONFIGURACIÓN ---
 with pestana5:
-    st.subheader("Configuración General")
+    st.subheader(f"Configuración de {st.session_state.usuario_activo}")
 
     with st.expander("💉 Dosis Prescrita de Insulina Basal"):
         nueva_basal = st.number_input(
@@ -754,5 +762,5 @@ with pestana5:
                 st.rerun()
 
     if st.button("Guardar Cambios de Configuración", type="primary", use_container_width=True):
-        guardar_config(st.session_state.config)
-        st.success("Configuración actualizada con éxito.")
+        guardar_config_usuario(st.session_state.usuario_activo, st.session_state.config)
+        st.success("Configuración de tu perfil actualizada con éxito.")
