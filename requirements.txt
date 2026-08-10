@@ -2,3 +2,5 @@ streamlit
 pandas
 requests
 pytz
+pyzbar
+Pillow
