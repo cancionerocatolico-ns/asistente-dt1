@@ -15,7 +15,10 @@ st.set_page_config(
 CONFIG_FILE = "config_dt1.json"
 DATA_FILE = "historial_dt1.csv"
 
-# --- BASE DE DATOS LOCAL RÁPIDA (Para alimentos sin empaque / caseros) ---
+# Intenta obtener la clave desde los Secrets de Streamlit Cloud; de lo contrario, usa tu clave asignada
+USDA_API_KEY = st.secrets.get("USDA_API_KEY", "7yA9Bl8gnwBlgZvR2csweSOHykYihVi9qsDxA4QP")
+
+# --- BASE DE DATOS LOCAL RÁPIDA (Alimentos cotidianos sin internet) ---
 ALIMENTOS_CASEROS = [
     {"alimento": "Pan de molde", "porcion": "1 rebanada (25g)", "carbos": 12},
     {"alimento": "Pan Hallulla / Marraqueta", "porcion": "1/2 unidad (50g)", "carbos": 25},
@@ -27,7 +30,6 @@ ALIMENTOS_CASEROS = [
     {"alimento": "Avena", "porcion": "1/2 taza (40g)", "carbos": 24}
 ]
 
-# Configuración por defecto con escalas/rangos fijos de glicemia
 DEFAULT_CONFIG = {
     "comidas": [
         {
@@ -74,42 +76,71 @@ def guardar_config(config_data):
     with open(CONFIG_FILE, "w") as f:
         json.dump(config_data, f, indent=4)
 
-# Consulta a Open Food Facts extrayendo información de porción
+# BÚSQUEDA 1: Open Food Facts (Marcas y productos procesados)
 def buscar_open_food_facts(query):
-    url = f"https://world.openfoodfacts.org/cgi/search.pl?search_terms={query}&search_simple=1&action=process&json=1&page_size=10"
+    url = f"https://world.openfoodfacts.org/cgi/search.pl?search_terms={query}&search_simple=1&action=process&json=1&page_size=8"
     headers = {"User-Agent": "MiControlDT1App/1.0 (streamlit-app)"}
-    
-    for intento in range(2):
-        try:
-            response = requests.get(url, headers=headers, timeout=10)
-            if response.status_code == 200:
-                datos = response.json()
-                productos = []
-                for p in datos.get("products", []):
-                    nombre = p.get("product_name", "Producto sin nombre")
-                    marca = p.get("brands", "")
-                    
-                    nutriments = p.get("nutriments", {})
-                    carbos_100g = float(nutriments.get("carbohydrates_100g", 0.0) or 0.0)
-                    carbos_porcion = nutriments.get("carbohydrates_serving")
-                    carbos_porcion = float(carbos_porcion) if carbos_porcion is not None else None
-                    
-                    serving_size = p.get("serving_size", "No especificada")
-                    
-                    nombre_completo = f"{nombre} ({marca})" if marca else nombre
-                    productos.append({
-                        "nombre": nombre_completo,
-                        "carbos_100g": carbos_100g,
-                        "carbos_porcion": carbos_porcion,
-                        "serving_size": serving_size
-                    })
-                return productos
-        except requests.exceptions.Timeout:
-            if intento == 1:
-                st.warning("⏱️ El servidor tardó en responder. Intenta buscar de nuevo.")
-        except Exception:
-            st.error("⚠️ Error de conexión al consultar el servidor.")
-            break
+    try:
+        response = requests.get(url, headers=headers, timeout=8)
+        if response.status_code == 200:
+            datos = response.json()
+            productos = []
+            for p in datos.get("products", []):
+                nombre = p.get("product_name", "Sin nombre")
+                marca = p.get("brands", "")
+                nutriments = p.get("nutriments", {})
+                carbos_100g = float(nutriments.get("carbohydrates_100g", 0.0) or 0.0)
+                carbos_porcion = nutriments.get("carbohydrates_serving")
+                carbos_porcion = float(carbos_porcion) if carbos_porcion is not None else None
+                serving_size = p.get("serving_size", "No especificada")
+                
+                nombre_completo = f"{nombre} ({marca})" if marca else nombre
+                productos.append({
+                    "nombre": nombre_completo,
+                    "carbos_100g": carbos_100g,
+                    "carbos_porcion": carbos_porcion,
+                    "serving_size": serving_size
+                })
+            return productos
+    except Exception:
+        pass
+    return []
+
+# BÚSQUEDA 2: USDA FoodData Central con tu API Key activa
+def buscar_usda(query):
+    url = f"https://api.nal.usda.gov/fdc/v1/foods/search?api_key={USDA_API_KEY}&query={query}&pageSize=8"
+    try:
+        response = requests.get(url, timeout=8)
+        if response.status_code == 200:
+            datos = response.json()
+            productos = []
+            for item in datos.get("foods", []):
+                nombre = item.get("description", "Sin nombre")
+                carbos_100g = 0.0
+                for nut in item.get("foodNutrients", []):
+                    if nut.get("nutrientId") == 1005 or "Carbohydrate" in nut.get("nutrientName", ""):
+                        carbos_100g = float(nut.get("value", 0.0))
+                        break
+                
+                serving_size_val = item.get("servingSize")
+                serving_unit = item.get("servingSizeUnit", "g")
+                
+                if serving_size_val:
+                    serving_size = f"{serving_size_val} {serving_unit}"
+                    carbos_porcion = round((carbos_100g * serving_size_val) / 100.0, 1)
+                else:
+                    serving_size = "100g (Estándar)"
+                    carbos_porcion = carbos_100g
+
+                productos.append({
+                    "nombre": f"🇺🇸 {nombre}",
+                    "carbos_100g": carbos_100g,
+                    "carbos_porcion": carbos_porcion,
+                    "serving_size": serving_size
+                })
+            return productos
+    except Exception:
+        pass
     return []
 
 if "config" not in st.session_state:
@@ -179,11 +210,15 @@ with pestana1:
 
 # --- PESTAÑA 2: BUSCADOR DE ALIMENTOS Y PORCIONES ---
 with pestana2:
-    st.subheader("Buscador de Alimentos y Porciones")
+    st.subheader("Buscador de Alimentos")
     
-    origen = st.radio("Fuente de datos:", ["Alimentos Caseros / Básicos", "Búsqueda En Línea (Marcas/Marcados)"], horizontal=True)
+    origen = st.radio(
+        "Fuente de datos:", 
+        ["Tabla Rápida Casera", "USDA (Alimentos Naturales/Cocinados)", "Open Food Facts (Marcas/Empaquetados)"], 
+        horizontal=False
+    )
     
-    if origen == "Alimentos Caseros / Básicos":
+    if origen == "Tabla Rápida Casera":
         df_caseros = pd.DataFrame(ALIMENTOS_CASEROS)
         sel = st.selectbox("Selecciona alimento:", df_caseros["alimento"].tolist())
         item = df_caseros[df_caseros["alimento"] == sel].iloc[0]
@@ -201,23 +236,28 @@ with pestana2:
             st.success(f"Añadido {item['alimento']} ({total_ch}g CH)")
 
     else:
-        busqueda = st.text_input("Buscar alimento o marca:")
+        busqueda = st.text_input("Buscar alimento o plato:")
         if busqueda:
-            resultados = buscar_open_food_facts(busqueda)
+            with st.spinner("Buscando en la base de datos..."):
+                if "USDA" in origen:
+                    resultados = buscar_usda(busqueda)
+                else:
+                    resultados = buscar_open_food_facts(busqueda)
+                
             if resultados:
                 opciones = [r["nombre"] for r in resultados]
                 prod_sel = st.selectbox("Resultados encontrados:", opciones)
                 info_prod = next(r for r in resultados if r["nombre"] == prod_sel)
                 
                 st.markdown("---")
-                st.write(f"**Porción declarada por fabricante:** `{info_prod['serving_size']}`")
+                st.write(f"**Porción referencial:** `{info_prod['serving_size']}`")
                 
                 col_a, col_b = st.columns(2)
                 with col_a:
                     st.metric("CH por 100g / 100ml", f"{info_prod['carbos_100g']}g")
                 with col_b:
-                    ch_porc_str = f"{info_prod['carbos_porcion']}g" if info_prod['carbos_porcion'] is not None else "No especificado"
-                    st.metric("CH por Porción", ch_porc_str)
+                    ch_p = f"{info_prod['carbos_porcion']}g" if info_prod['carbos_porcion'] is not None else "N/A"
+                    st.metric("CH por Porción", ch_p)
 
                 modo_calculo = st.radio("Calcular por:", ["Gramos / ml exactos", "Número de porciones"], horizontal=True)
                 
@@ -231,7 +271,7 @@ with pestana2:
                         total_ch = round(info_prod['carbos_porcion'] * n_porciones, 1)
                         detalle_txt = f"{n_porciones} porción(es) ({info_prod['serving_size']})"
                     else:
-                        st.warning("Este producto no tiene registrada la cantidad de CH por porción. Utiliza el cálculo por gramos.")
+                        st.warning("Sin carbohidratos registrados por porción. Utiliza la opción de gramos exactos.")
                         total_ch = 0
                         detalle_txt = ""
 
@@ -242,6 +282,8 @@ with pestana2:
                         "total_carbos": total_ch
                     })
                     st.success(f"Añadido {info_prod['nombre']} ({total_ch}g CH)")
+            else:
+                st.warning("No se encontraron resultados para esta búsqueda.")
 
     if st.session_state.plato:
         st.markdown("---")
@@ -265,13 +307,11 @@ with pestana3:
 # --- PESTAÑA 4: CONFIGURACIÓN DE RANGOS ---
 with pestana4:
     st.subheader("Configuración de Rangos de Glicemia y Ratios")
-    
     for ci, c in enumerate(st.session_state.config["comidas"]):
         with st.expander(f"Configurar Ratios y Rangos para {c['nombre']}"):
             st.session_state.config["comidas"][ci]["ratio"] = st.number_input(
                 f"Ratio de CH (g por 1U)", min_value=1.0, value=float(c["ratio"]), key=f"conf_ratio_{ci}"
             )
-            
             st.write("**Rangos de Glicemia y Dosis de Corrección:**")
             escalas = c["escalas"]
             for ei, e in enumerate(escalas):
@@ -286,7 +326,6 @@ with pestana4:
                     if st.button("✕", key=f"del_{ci}_{ei}"):
                         c["escalas"].pop(ei)
                         st.rerun()
-            
             if st.button(f"+ Añadir Rango a {c['nombre']}", key=f"add_rango_{ci}"):
                 c["escalas"].append({"min": 0, "max": 0, "dosis": 0.0})
                 st.rerun()
