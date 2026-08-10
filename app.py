@@ -107,6 +107,8 @@ ALIMENTOS_CASEROS = [
     {"alimento": "Manzana", "porcion": "1 unidad mediana (150g)", "carbos": 18},
     {"alimento": "Plátano", "porcion": "1 unidad mediana (120g)", "carbos": 23},
     {"alimento": "Avena", "porcion": "1/2 taza (40g)", "carbos": 24},
+    {"alimento": "Galletas integrales", "porcion": "3 unidades (30g)", "carbos": 15},
+    {"alimento": "Yogurt batido", "porcion": "1 pote (120g)", "carbos": 10},
 ]
 
 DEFAULT_CONFIG = {
@@ -148,6 +150,17 @@ DEFAULT_CONFIG = {
                 {"min": 231, "max": 999, "dosis": 3.0},
             ],
         },
+        {
+            "nombre": "Colación",
+            "inicio": 0,
+            "fin": 23,
+            "ratio": 15.0,
+            "escalas": [
+                {"min": 0, "max": 150, "dosis": 0.0},
+                {"min": 151, "max": 200, "dosis": 1.0},
+                {"min": 201, "max": 999, "dosis": 2.0},
+            ],
+        },
     ]
 }
 
@@ -156,7 +169,12 @@ def cargar_config():
     if os.path.exists(CONFIG_FILE):
         try:
             with open(CONFIG_FILE, "r") as f:
-                return json.load(f)
+                cfg = json.load(f)
+                # Asegurar que existan las colaciones en la config si se usaba una versión anterior
+                nombres = [c["nombre"] for c in cfg.get("comidas", [])]
+                if "Colación" not in nombres:
+                    cfg["comidas"].append(DEFAULT_CONFIG["comidas"][3])
+                return cfg
         except Exception:
             return DEFAULT_CONFIG
     return DEFAULT_CONFIG
@@ -267,13 +285,13 @@ with pestana1:
     hora_actual = datetime.now().hour
     comida_sugerida_idx = 0
     for idx, c in enumerate(st.session_state.config["comidas"]):
-        if c["inicio"] <= hora_actual <= c["fin"]:
+        if c["nombre"] != "Colación" and c["inicio"] <= hora_actual <= c["fin"]:
             comida_sugerida_idx = idx
             break
 
     nombres_comidas = [c["nombre"] for c in st.session_state.config["comidas"]]
     comida_sel_nombre = st.selectbox(
-        "Comida actual:", nombres_comidas, index=comida_sugerida_idx
+        "Comida o Momento actual:", nombres_comidas, index=comida_sugerida_idx
     )
     comida_actual = next(
         c for c in st.session_state.config["comidas"] if c["nombre"] == comida_sel_nombre
@@ -392,7 +410,9 @@ with pestana2:
             st.success(f"Añadido {item['alimento']} ({total_ch}g CH)")
 
     elif origen == "📷 Escanear Código de Barras":
+        st.info("💡 **Consejo de escaneo:** Asegúrate de enfocar con buena iluminación y mantener firme la cámara.")
         foto = st.camera_input("Enfoca el código de barras del producto")
+        
         if foto:
             try:
                 imagen = Image.open(foto)
@@ -432,9 +452,27 @@ with pestana2:
                             )
                             st.success(f"Añadido {nombre_completo} ({total_ch}g CH)")
                     else:
-                        st.error("Producto no encontrado en Open Food Facts.")
+                        st.warning("⚠️ Producto no encontrado en la base de datos pública.")
+                        st.write("Puedes ingresar la información manualmente a continuación:")
+                        
+                        col_m1, col_m2 = st.columns(2)
+                        with col_m1:
+                            nombre_manual = st.text_input("Nombre del alimento:", value="Producto Escaneado")
+                        with col_m2:
+                            carbos_manual = st.number_input("Carbohidratos calculados (g):", min_value=0.0, value=10.0, step=1.0)
+                            
+                        if st.button("Añadir Alimento Manualmente", use_container_width=True):
+                            st.session_state.plato.append(
+                                {
+                                    "alimento": nombre_manual,
+                                    "detalle": "Entrada Manual",
+                                    "total_carbos": carbos_manual,
+                                }
+                            )
+                            st.success(f"Añadido {nombre_manual} ({carbos_manual}g CH)")
+
                 else:
-                    st.warning("⚠️ No se detectó código de barras. Intenta tomar la foto con más luz y enfoque.")
+                    st.warning("⚠️ No se detectó código de barras. Intenta tomar la foto con más luz o enfocar más cerca.")
             except Exception as e:
                 st.error(f"Error al procesar la imagen: {e}")
 
