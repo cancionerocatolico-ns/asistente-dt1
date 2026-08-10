@@ -18,7 +18,11 @@ CONFIG_FILE = "config_dt1.json"
 USDA_API_KEY = st.secrets.get("USDA_API_KEY", "")
 
 # --- CONEXIÓN A GOOGLE SHEETS VÍA APPS SCRIPT ---
-WEBHOOK_URL = "https://script.google.com/macros/s/AKfycbzqanAiYz52enC0jrrB2sJldaYC-6JQ6QKN9pticGCu2s4NrBGDcAY1EReGzl6QaaTDbg/exec"
+# Intenta obtener la URL desde Secrets; si no está configurada, usa la URL por defecto.
+WEBHOOK_URL = st.secrets.get(
+    "WEBHOOK_URL",
+    "https://script.google.com/macros/s/AKfycbzqanAiYz52enC0jrrB2sJldaYC-6JQ6QKN9pticGCu2s4NrBGDcAY1EReGzl6QaaTDbg/exec",
+)
 
 
 def guardar_registro_google_sheets(fecha, comida, glicemia, carbohidratos, dosis):
@@ -319,6 +323,24 @@ with pestana1:
         if exito:
             st.success("✅ Registro respaldado exitosamente en Google Sheets.")
 
+    # --- MEJORA: SECCIÓN PARA REGISTRO DE INSULINA BASAL ---
+    st.markdown("---")
+    with st.expander("🌙 Registrar Insulina Basal (Lenta / Dosis Diaria)"):
+        col_b1, col_b2 = st.columns([2, 1])
+        with col_b1:
+            dosis_basal = st.number_input(
+                "Unidades de Insulina Basal:", min_value=1.0, max_value=100.0, value=15.0, step=1.0
+            )
+        with col_b2:
+            if st.button("Guardar Basal", use_container_width=True):
+                fecha_str = datetime.now().strftime("%Y-%m-%d %H:%M")
+                with st.spinner("Guardando basal..."):
+                    exito = guardar_registro_google_sheets(
+                        fecha_str, "Insulina Basal", 0, 0, dosis_basal
+                    )
+                if exito:
+                    st.success("✅ Dosis basal guardada.")
+
 # --- PESTAÑA 2: BUSCADOR DE ALIMENTOS ---
 with pestana2:
     st.subheader("Buscador de Alimentos")
@@ -441,13 +463,41 @@ with pestana3:
         df_historial = obtener_historial_google_sheets()
 
     if not df_historial.empty and "Fecha" in df_historial.columns:
-        st.dataframe(df_historial, use_container_width=True)
+        
+        # Convertir columna Fecha a datetime para filtrar y graficar
+        df_historial["Fecha_dt"] = pd.to_datetime(df_historial["Fecha"], errors="coerce")
+
+        # --- MEJORA: FILTRO POR FECHAS ---
+        st.write("🔍 **Filtrar por Fecha:**")
+        fechas_validas = df_historial["Fecha_dt"].dropna()
+        min_f = fechas_validas.min().date() if not fechas_validas.empty else datetime.now().date()
+        max_f = fechas_validas.max().date() if not fechas_validas.empty else datetime.now().date()
+
+        f_inicio, f_fin = st.date_input("Rango:", value=(min_f, max_f))
+
+        # Filtrar dataframe
+        mask = (df_historial["Fecha_dt"].dt.date >= f_inicio) & (
+            df_historial["Fecha_dt"].dt.date <= f_fin
+        )
+        df_filtrado = df_historial.loc[mask].copy()
+
+        # --- MEJORA: GRÁFICO VISUAL DE GLICEMIA ---
+        st.write("📈 **Tendencia de Glicemia (mg/dL):**")
+        df_grafico = df_filtrado[df_filtrado["Comida"] != "Insulina Basal"].copy()
+        if not df_grafico.empty:
+            df_grafico["Glicemia"] = pd.to_numeric(df_grafico["Glicemia"], errors="coerce")
+            df_chart = df_grafico.set_index("Fecha")[["Glicemia"]]
+            st.line_chart(df_chart)
+
+        st.dataframe(
+            df_filtrado.drop(columns=["Fecha_dt"], errors="ignore"), use_container_width=True
+        )
 
         st.markdown("---")
         col_d1, col_d2 = st.columns(2)
 
         with col_d1:
-            csv_data = df_historial.to_csv(index=False).encode("utf-8")
+            csv_data = df_filtrado.drop(columns=["Fecha_dt"], errors="ignore").to_csv(index=False).encode("utf-8")
             st.download_button(
                 label="⬇️ Descargar Historial (CSV)",
                 data=csv_data,
