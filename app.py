@@ -270,7 +270,7 @@ def buscar_open_food_facts(query):
                 carbos_porcion = (
                     float(carbos_porcion) if carbos_porcion is not None else None
                 )
-                serving_size = p.get("serving_size", "No especificada")
+                serving_size = p.get("serving_size", "100g / 100ml")
 
                 nombre_completo = f"{nombre} ({marca})" if marca else nombre
                 productos.append(
@@ -550,6 +550,7 @@ with pestana2:
             st.session_state.plato.append(
                 {
                     "alimento": item["alimento"],
+                    "tamaño_porcion": item["porcion"],
                     "detalle": f"{cant_porciones} porción(es)",
                     "total_carbos": total_ch,
                 }
@@ -577,6 +578,7 @@ with pestana2:
                         producto = res.json()["product"]
                         nombre_prod = producto.get("product_name", "Producto sin nombre")
                         marca_prod = producto.get("brands", "")
+                        serving_size_prod = producto.get("serving_size", "100g / 100ml")
                         nombre_completo = (
                             f"{nombre_prod} ({marca_prod})" if marca_prod else nombre_prod
                         )
@@ -585,6 +587,7 @@ with pestana2:
                         carbos_100g = float(nutriments.get("carbohydrates_100g", 0.0) or 0.0)
 
                         st.write(f"**Alimento:** {nombre_completo}")
+                        st.caption(f"Porción de referencia: **{serving_size_prod}**")
                         st.metric("Carbohidratos por 100g", f"{carbos_100g}g")
 
                         gramos = st.number_input(
@@ -596,6 +599,7 @@ with pestana2:
                             st.session_state.plato.append(
                                 {
                                     "alimento": nombre_completo,
+                                    "tamaño_porcion": serving_size_prod,
                                     "detalle": f"{gramos}g/ml",
                                     "total_carbos": total_ch,
                                 }
@@ -666,6 +670,7 @@ with pestana2:
                     st.session_state.plato.append(
                         {
                             "alimento": info_prod["nombre"],
+                            "tamaño_porcion": info_prod["serving_size"],
                             "detalle": detalle_txt,
                             "total_carbos": total_ch,
                         }
@@ -678,7 +683,15 @@ with pestana2:
         st.markdown("---")
         st.write("### 🍽️ Plato Actual")
         df_plato = pd.DataFrame(st.session_state.plato)
-        st.dataframe(df_plato, use_container_width=True)
+        df_plato_display = df_plato.rename(
+            columns={
+                "alimento": "Alimento",
+                "tamaño_porcion": "Tamaño Porción",
+                "detalle": "Consumo Elegido",
+                "total_carbos": "Carbohidratos (g)",
+            }
+        )
+        st.dataframe(df_plato_display, use_container_width=True)
         st.write(f"**Total Carbohidratos acumulados:** {round(sum(df_plato['total_carbos']), 1)}g")
 
         if st.button("Vaciar Plato", use_container_width=True):
