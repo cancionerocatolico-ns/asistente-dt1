@@ -18,6 +18,26 @@ st.set_page_config(
     initial_sidebar_state="collapsed",
 )
 
+# --- CSS PERSONALIZADO PARA PESTAÑAS EN MÓVILES ---
+st.markdown(
+    """
+    <style>
+    @media (max-width: 768px) {
+        div[data-baseweb="tab-list"] {
+            flex-wrap: wrap !important;
+            gap: 4px !important;
+        }
+        button[data-baseweb="tab"] {
+            flex: 1 1 40% !important;
+            padding: 8px 4px !important;
+            font-size: 13px !important;
+        }
+    }
+    </style>
+    """,
+    unsafe_allow_html=True,
+)
+
 USDA_API_KEY = st.secrets.get("USDA_API_KEY", "")
 
 # --- CONEXIÓN A GOOGLE SHEETS VÍA APPS SCRIPT ---
@@ -232,8 +252,9 @@ def guardar_config_usuario(usuario, config_data):
         json.dump(config_data, f, indent=4)
 
 
+# --- CONEXIÓN A OPEN FOOD FACTS CHILE ---
 def buscar_open_food_facts(query):
-    url = f"https://world.openfoodfacts.org/cgi/search.pl?search_terms={query}&search_simple=1&action=process&json=1&page_size=8"
+    url = f"https://cl.openfoodfacts.org/cgi/search.pl?search_terms={query}&search_simple=1&action=process&json=1&page_size=8"
     headers = {"User-Agent": "MiControlDT1App/1.0 (streamlit-app)"}
     try:
         response = requests.get(url, headers=headers, timeout=8)
@@ -508,7 +529,7 @@ with pestana2:
         [
             "Tabla Rápida Casera",
             "USDA (Traducida al Español)",
-            "Open Food Facts (Marcas/Empaquetados)",
+            "Open Food Facts Chile (Marcas/Empaquetados)",
             "📷 Escanear Código de Barras",
         ],
         horizontal=False,
@@ -547,7 +568,8 @@ with pestana2:
                     codigo_barras = codigos[0].data.decode("utf-8")
                     st.success(f"📱 Código detectado: `{codigo_barras}`")
 
-                    url = f"https://world.openfoodfacts.org/api/v0/product/{codigo_barras}.json"
+                    # Consulta ajustada a Open Food Facts Chile
+                    url = f"https://cl.openfoodfacts.org/api/v0/product/{codigo_barras}.json"
                     headers = {"User-Agent": "MiControlDT1App/1.0 (streamlit-app)"}
                     res = requests.get(url, headers=headers, timeout=8)
 
@@ -580,7 +602,7 @@ with pestana2:
                             )
                             st.success(f"Añadido {nombre_completo} ({total_ch}g CH)")
                     else:
-                        st.warning("⚠️ Producto no encontrado.")
+                        st.warning("⚠️ Producto no encontrado en la base de datos de Chile.")
             except Exception as e:
                 st.error(f"Error al procesar la imagen: {e}")
 
@@ -650,7 +672,7 @@ with pestana2:
                     )
                     st.success(f"Añadido {info_prod['nombre']} ({total_ch}g CH)")
             else:
-                st.warning("No se encontraron resultados.")
+                st.warning("No se encontraron resultados en Chile.")
 
     if st.session_state.plato:
         st.markdown("---")
