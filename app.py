@@ -6,6 +6,8 @@ from datetime import datetime
 import pandas as pd
 import pytz
 import requests
+from requests.adapters import HTTPAdapter
+from urllib3.util.retry import Retry
 import streamlit as st
 from PIL import Image
 from pyzbar.pyzbar import decode
@@ -18,19 +20,24 @@ st.set_page_config(
     initial_sidebar_state="collapsed",
 )
 
-# --- CSS PERSONALIZADO PARA PESTAÑAS EN MÓVILES ---
+# --- CSS PERSONALIZADO PARA PESTAÑAS EN MÓVILES (SCROLL HORIZONTAL) ---
 st.markdown(
     """
     <style>
     @media (max-width: 768px) {
         div[data-baseweb="tab-list"] {
-            flex-wrap: wrap !important;
-            gap: 4px !important;
+            display: flex !important;
+            overflow-x: auto !important;
+            white-space: nowrap !important;
+            flex-wrap: nowrap !important;
+            -webkit-overflow-scrolling: touch;
+            gap: 8px !important;
+            padding-bottom: 4px !important;
         }
         button[data-baseweb="tab"] {
-            flex: 1 1 40% !important;
-            padding: 8px 4px !important;
-            font-size: 13px !important;
+            flex: 0 0 auto !important;
+            padding: 8px 12px !important;
+            font-size: 14px !important;
         }
     }
     </style>
@@ -45,6 +52,22 @@ WEBHOOK_URL = st.secrets.get(
     "WEBHOOK_URL",
     "https://script.google.com/macros/s/AKfycbyvD3sNgP0C5fTapNkfLKJXqidvrKZ9pm5X3DVeB-i2ex8QbS7BddFiZpfGkeaQnjhZlQ/exec",
 )
+
+# --- SESIÓN CON REINTENTOS PARA APIS EXTERNAS ---
+def crear_session_con_reintentos():
+    session = requests.Session()
+    retries = Retry(
+        total=3,
+        backoff_factor=1,
+        status_forcelist=[429, 500, 502, 503, 504],
+        raise_on_status=False
+    )
+    adapter = HTTPAdapter(max_retries=retries)
+    session.mount("http://", adapter)
+    session.mount("https://", adapter)
+    return session
+
+http_session = crear_session_con_reintentos()
 
 
 # --- FUNCIONES DE AUTENTICACIÓN ---
@@ -61,7 +84,7 @@ def autenticar_usuario(usuario, password):
         "password_hash": generar_hash_password(password),
     }
     try:
-        res = requests.post(WEBHOOK_URL, json=data, timeout=8)
+        res = http_session.post(WEBHOOK_URL, json=data, timeout=8)
         if res.status_code == 200:
             return res.json().get("status")
     except Exception:
@@ -77,7 +100,7 @@ def registrar_nuevo_usuario(usuario, password):
         "password_hash": generar_hash_password(password),
     }
     try:
-        res = requests.post(WEBHOOK_URL, json=data, timeout=8)
+        res = http_session.post(WEBHOOK_URL, json=data, timeout=8)
         if res.status_code == 200:
             return res.json().get("status")
     except Exception:
@@ -107,7 +130,7 @@ def guardar_registro_google_sheets(fecha, usuario, comida, glicemia, carbohidrat
     }
 
     try:
-        response = requests.post(WEBHOOK_URL, json=datos, timeout=8)
+        response = http_session.post(WEBHOOK_URL, json=datos, timeout=8)
         if response.status_code == 200:
             obtener_historial_google_sheets.clear()
             return True
@@ -124,7 +147,7 @@ def obtener_historial_google_sheets(usuario):
     """Lee únicamente los registros del usuario autenticado desde Google Sheets."""
     try:
         url = f"{WEBHOOK_URL}?usuario={requests.utils.quote(usuario)}"
-        response = requests.get(url, timeout=8)
+        response = http_session.get(url, timeout=8)
         if response.status_code == 200:
             datos = response.json()
             return pd.DataFrame(datos)
@@ -136,7 +159,7 @@ def obtener_historial_google_sheets(usuario):
 def borrar_historial_google_sheets(usuario):
     """Limpia los datos del usuario actual en Google Sheets."""
     try:
-        response = requests.post(
+        response = http_session.post(
             WEBHOOK_URL, json={"action": "clear", "usuario": usuario}, timeout=8
         )
         if response.status_code == 200:
@@ -153,7 +176,7 @@ def traducir_a_espanol(texto):
         return texto
     try:
         url = f"https://translate.googleapis.com/translate_a/single?client=gtx&sl=auto&tl=es&dt=t&q={requests.utils.quote(texto)}"
-        res = requests.get(url, timeout=4)
+        res = http_session.get(url, timeout=4)
         if res.status_code == 200:
             return res.json()[0][0][0]
     except Exception:
@@ -252,12 +275,17 @@ def guardar_config_usuario(usuario, config_data):
         json.dump(config_data, f, indent=4)
 
 
-# --- CONEXIÓN A OPEN FOOD FACTS CHILE ---
+# --- CONEXIÓN A OPEN FOOD FACTS CHILE CON CACHÉ Y ESTABILIDAD ---
+@st.cache_data(ttl=3600, show_spinner=False)
 def buscar_open_food_facts(query):
-    url = f"https://cl.openfoodfacts.org/cgi/search.pl?search_terms={query}&search_simple=1&action=process&json=1&page_size=8"
-    headers = {"User-Agent": "MiControlDT1App/1.0 (streamlit-app)"}
+    if not query or len(query.strip()) < 2:
+        return []
+
+    url = f"https://cl.openfoodfacts.org/cgi/search.pl?search_terms={requests.utils.quote(query)}&search_simple=1&action=process&json=1&page_size=10"
+    headers = {"User-Agent": "MiControlDT1App - Streamlit - Version 1.1"}
+    
     try:
-        response = requests.get(url, headers=headers, timeout=8)
+        response = http_session.get(url, headers=headers, timeout=6)
         if response.status_code == 200:
             datos = response.json()
             productos = []
@@ -287,14 +315,18 @@ def buscar_open_food_facts(query):
     return []
 
 
+@st.cache_data(ttl=3600, show_spinner=False)
 def buscar_usda(query):
     if not USDA_API_KEY:
         st.error("⚠️ Falta configurar la API Key de USDA en los Secrets de Streamlit.")
         return []
 
-    url = f"https://api.nal.usda.gov/fdc/v1/foods/search?api_key={USDA_API_KEY}&query={query}&pageSize=8"
+    if not query or len(query.strip()) < 2:
+        return []
+
+    url = f"https://api.nal.usda.gov/fdc/v1/foods/search?api_key={USDA_API_KEY}&query={requests.utils.quote(query)}&pageSize=10"
     try:
-        response = requests.get(url, timeout=8)
+        response = http_session.get(url, timeout=6)
         if response.status_code == 200:
             datos = response.json()
             productos = []
@@ -569,10 +601,9 @@ with pestana2:
                     codigo_barras = codigos[0].data.decode("utf-8")
                     st.success(f"📱 Código detectado: `{codigo_barras}`")
 
-                    # Consulta ajustada a Open Food Facts Chile
                     url = f"https://cl.openfoodfacts.org/api/v0/product/{codigo_barras}.json"
-                    headers = {"User-Agent": "MiControlDT1App/1.0 (streamlit-app)"}
-                    res = requests.get(url, headers=headers, timeout=8)
+                    headers = {"User-Agent": "MiControlDT1App - Streamlit - Version 1.1"}
+                    res = http_session.get(url, headers=headers, timeout=8)
 
                     if res.status_code == 200 and res.json().get("status") == 1:
                         producto = res.json()["product"]
@@ -611,73 +642,83 @@ with pestana2:
                 st.error(f"Error al procesar la imagen: {e}")
 
     else:
-        busqueda = st.text_input("Buscar alimento:")
-        if busqueda:
-            with st.spinner("Buscando alimentos..."):
+        # BÚSQUEDA DINÁMICA MEDIANTE SELECTBOX INTERACTIVO CON AUTOCOMPLETADO
+        query_input = st.text_input("Busca o escribe para filtrar alimentos:", key="query_text")
+
+        resultados = []
+        if query_input:
+            with st.spinner("Buscando..."):
                 if "USDA" in origen:
-                    resultados = buscar_usda(busqueda)
+                    resultados = buscar_usda(query_input)
                 else:
-                    resultados = buscar_open_food_facts(busqueda)
+                    resultados = buscar_open_food_facts(query_input)
 
-            if resultados:
-                opciones = [r["nombre"] for r in resultados]
-                prod_sel = st.selectbox("Resultados encontrados:", opciones)
-                info_prod = next(r for r in resultados if r["nombre"] == prod_sel)
+        if resultados:
+            opciones_dict = {r["nombre"]: r for r in resultados}
+            
+            # Selectbox interactivo que permite escribir/filtrar directamente
+            prod_sel_nombre = st.selectbox(
+                "Resultados encontrados (escribe para autocompletar):",
+                options=list(opciones_dict.keys()),
+                index=0
+            )
 
-                st.markdown("---")
-                st.write(f"**Porción referencial:** `{info_prod['serving_size']}`")
+            info_prod = opciones_dict[prod_sel_nombre]
 
-                col_a, col_b = st.columns(2)
-                with col_a:
-                    st.metric("CH por 100g / 100ml", f"{info_prod['carbos_100g']}g")
-                with col_b:
-                    ch_p = (
-                        f"{info_prod['carbos_porcion']}g"
-                        if info_prod["carbos_porcion"] is not None
-                        else "N/A"
-                    )
-                    st.metric("CH por Porción", ch_p)
+            st.markdown("---")
+            st.write(f"**Porción referencial:** `{info_prod['serving_size']}`")
 
-                modo_calculo = st.radio(
-                    "Calcular por:",
-                    ["Gramos / ml exactos", "Número de porciones"],
-                    horizontal=True,
+            col_a, col_b = st.columns(2)
+            with col_a:
+                st.metric("CH por 100g / 100ml", f"{info_prod['carbos_100g']}g")
+            with col_b:
+                ch_p = (
+                    f"{info_prod['carbos_porcion']}g"
+                    if info_prod["carbos_porcion"] is not None
+                    else "N/A"
                 )
+                st.metric("CH por Porción", ch_p)
 
-                if modo_calculo == "Gramos / ml exactos":
-                    gramos = st.number_input(
-                        "Cantidad en gramos/ml:", min_value=1, max_value=1000, value=100, step=10
-                    )
-                    total_ch = round((info_prod["carbos_100g"] * gramos) / 100.0, 1)
-                    detalle_txt = f"{gramos}g/ml"
-                else:
-                    if info_prod["carbos_porcion"] is not None:
-                        n_porciones = st.number_input(
-                            "Cantidad de porciones:",
-                            min_value=0.25,
-                            max_value=10.0,
-                            value=1.0,
-                            step=0.25,
-                        )
-                        total_ch = round(info_prod["carbos_porcion"] * n_porciones, 1)
-                        detalle_txt = f"{n_porciones} porción(es) ({info_prod['serving_size']})"
-                    else:
-                        st.warning("Sin datos por porción. Utiliza gramos exactos.")
-                        total_ch = 0
-                        detalle_txt = ""
+            modo_calculo = st.radio(
+                "Calcular por:",
+                ["Gramos / ml exactos", "Número de porciones"],
+                horizontal=True,
+            )
 
-                if total_ch > 0 and st.button("Añadir al Plato", use_container_width=True):
-                    st.session_state.plato.append(
-                        {
-                            "alimento": info_prod["nombre"],
-                            "tamaño_porcion": info_prod["serving_size"],
-                            "detalle": detalle_txt,
-                            "total_carbos": total_ch,
-                        }
-                    )
-                    st.success(f"Añadido {info_prod['nombre']} ({total_ch}g CH)")
+            if modo_calculo == "Gramos / ml exactos":
+                gramos = st.number_input(
+                    "Cantidad en gramos/ml:", min_value=1, max_value=1000, value=100, step=10
+                )
+                total_ch = round((info_prod["carbos_100g"] * gramos) / 100.0, 1)
+                detalle_txt = f"{gramos}g/ml"
             else:
-                st.warning("No se encontraron resultados en Chile.")
+                if info_prod["carbos_porcion"] is not None:
+                    n_porciones = st.number_input(
+                        "Cantidad de porciones:",
+                        min_value=0.25,
+                        max_value=10.0,
+                        value=1.0,
+                        step=0.25,
+                    )
+                    total_ch = round(info_prod["carbos_porcion"] * n_porciones, 1)
+                    detalle_txt = f"{n_porciones} porción(es) ({info_prod['serving_size']})"
+                else:
+                    st.warning("Sin datos por porción. Utiliza gramos exactos.")
+                    total_ch = 0
+                    detalle_txt = ""
+
+            if total_ch > 0 and st.button("Añadir al Plato", use_container_width=True):
+                st.session_state.plato.append(
+                    {
+                        "alimento": info_prod["nombre"],
+                        "tamaño_porcion": info_prod["serving_size"],
+                        "detalle": detalle_txt,
+                        "total_carbos": total_ch,
+                    }
+                )
+                st.success(f"Añadido {info_prod['nombre']} ({total_ch}g CH)")
+        elif query_input:
+            st.warning("No se encontraron resultados para la búsqueda.")
 
     if st.session_state.plato:
         st.markdown("---")
