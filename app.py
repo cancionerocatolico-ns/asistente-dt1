@@ -60,7 +60,7 @@ def crear_session_con_reintentos():
         total=3,
         backoff_factor=1,
         status_forcelist=[429, 500, 502, 503, 504],
-        raise_on_status=False
+        raise_on_status=False,
     )
     adapter = HTTPAdapter(max_retries=retries)
     session.mount("http://", adapter)
@@ -283,7 +283,7 @@ def buscar_open_food_facts(query):
 
     url = f"https://cl.openfoodfacts.org/cgi/search.pl?search_terms={requests.utils.quote(query)}&search_simple=1&action=process&json=1&page_size=10"
     headers = {"User-Agent": "MiControlDT1App - Streamlit - Version 1.1"}
-    
+
     try:
         response = http_session.get(url, headers=headers, timeout=6)
         if response.status_code == 200:
@@ -618,7 +618,7 @@ with pestana2:
                         carbos_100g = float(nutriments.get("carbohydrates_100g", 0.0) or 0.0)
 
                         st.write(f"**Alimento:** {nombre_completo}")
-                        st.caption(f"Porción de referencia: **{serving_size_prod}**")
+                        st.info(f"📏 **Tamaño de porción declarado:** {serving_size_prod}")
                         st.metric("Carbohidratos por 100g", f"{carbos_100g}g")
 
                         gramos = st.number_input(
@@ -655,18 +655,18 @@ with pestana2:
 
         if resultados:
             opciones_dict = {r["nombre"]: r for r in resultados}
-            
+
             # Selectbox interactivo que permite escribir/filtrar directamente
             prod_sel_nombre = st.selectbox(
                 "Resultados encontrados (escribe para autocompletar):",
                 options=list(opciones_dict.keys()),
-                index=0
+                index=0,
             )
 
             info_prod = opciones_dict[prod_sel_nombre]
 
             st.markdown("---")
-            st.write(f"**Porción referencial:** `{info_prod['serving_size']}`")
+            st.info(f"📏 **Tamaño de porción declarado:** {info_prod['serving_size']}")
 
             col_a, col_b = st.columns(2)
             with col_a:
